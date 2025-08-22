@@ -1,128 +1,113 @@
-require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
 const bcrypt = require('bcrypt');
 const { Pool } = require('pg');
+const bodyParser = require('body-parser');
 const app = express();
-const port = process.env.PORT || 3000;
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+// ---------- ENV VARIABLES ----------
+const PORT = process.env.PORT || 3000;
+const DATABASE_URL = process.env.DATABASE_URL; // Render DB URL
+const SESSION_SECRET = process.env.SESSION_SECRET || 'supersecret';
 
-app.use(express.json());
+// ---------- DATABASE CONNECTION ----------
+const pool = new Pool({ connectionString: DATABASE_URL });
+
+// ---------- MIDDLEWARE ----------
+app.use(bodyParser.json());
 app.use(session({
-  secret: process.env.SESSION_SECRET,
+  secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false
 }));
 
-// Middleware to require login
-function requireLogin(req,res,next){
-  if(!req.session.user) return res.status(401).json({error:"Unauthorized"});
-  next();
-}
-
-// Middleware to require role
-function requireRole(role){
-  return (req,res,next)=>{
-    if(!req.session.user || !req.session.user.role.includes(role)) return res.status(403).json({error:"Forbidden"});
-    next();
-  };
-}
-
-// --- AUTH ---
-app.post("/api/register", async (req,res)=>{
-  try {
-    const {name,email,password,role,garage_id} = req.body;
-    if(!name || !email || !password || !role) return res.status(400).json({error:"Missing fields"});
-    const hash = await bcrypt.hash(password,10);
-    const result = await pool.query(
-      `INSERT INTO users(name,email,password_hash,role,garage_id) VALUES($1,$2,$3,$4,$5) RETURNING id,name,email,role,garage_id`,
-      [name,email,hash,role,garage_id || null]
-    );
-    res.json(result.rows[0]);
-  } catch(err){
-    console.error(err);
-    res.status(500).json({error:"Failed to register"});
-  }
-});
-
-app.post("/api/login", async (req,res)=>{
-  try{
-    const {email,password} = req.body;
-    const result = await pool.query("SELECT * FROM users WHERE email=$1",[email]);
-    if(result.rows.length===0) return res.status(400).json({error:"Invalid email or password"});
-    const user = result.rows[0];
-    const match = await bcrypt.compare(password,user.password_hash);
-    if(!match) return res.status(400).json({error:"Invalid email or password"});
-    req.session.user = {id:user.id,name:user.name,email:user.email,role:user.role,garage_id:user.garage_id};
-    res.json(req.session.user);
-  } catch(err){ console.error(err); res.status(500).json({error:"Login failed"}); }
-});
-
-app.get("/api/me", (req,res)=>{ res.json(req.session.user||null); });
-
-// --- ADMIN / SUPERADMIN ---
-app.get("/api/admin/garages", requireLogin, async (req,res)=>{
-  const result = await pool.query("SELECT * FROM garages ORDER BY id DESC");
-  res.json(result.rows);
-});
-
-app.post("/api/admin/garages", requireLogin, async (req,res)=>{
-  const user = req.session.user;
-  if(!["admin","superadmin"].includes(user.role)) return res.status(403).json({error:"Forbidden"});
-  const {name,address} = req.body;
-  const result = await pool.query("INSERT INTO garages(name,address) VALUES($1,$2) RETURNING *",[name,address]);
-  res.json(result.rows[0]);
-});
-
-app.get("/api/admin/bookings", requireLogin, async (req,res)=>{
-  const user = req.session.user;
-  if(!["admin","superadmin"].includes(user.role)) return res.status(403).json({error:"Forbidden"});
-  const result = await pool.query(`SELECT b.*, u.name,u.email,u.role FROM bookings b JOIN users u ON b.user_id=u.id ORDER BY b.date,b.time`);
-  res.json(result.rows);
-});
-
-app.post("/api/admin/reset-db", requireLogin, requireRole("superadmin"), async (req,res)=>{
-  await pool.query("TRUNCATE bookings,users,garages RESTART IDENTITY CASCADE");
-  res.json({message:"Database reset"});
-});
-
-app.post("/api/admin/reset-users", requireLogin, requireRole("superadmin"), async (req,res)=>{
-  await pool.query("DELETE FROM users WHERE role != 'superadmin'");
-  res.json({message:"Users reset"});
-});
-
-app.post("/api/admin/add-test-data", requireLogin, requireRole("superadmin"), async (req,res)=>{
-  await pool.query("INSERT INTO garages(name,address) VALUES($1,$2)",["Test Garage","123 Street"]);
-  const hash = await bcrypt.hash("password",10);
-  await pool.query("INSERT INTO users(name,email,password_hash,role) VALUES($1,$2,$3,$4)",["Test Admin","admin@test.com",hash,"admin"]);
-  await pool.query("INSERT INTO users(name,email,password_hash,role) VALUES($1,$2,$3,$4)",["Test Customer","customer@test.com",hash,"customer"]);
-  res.json({message:"Test data added"});
-});
-
-app.post("/api/admin/create-user", requireLogin, requireRole("superadmin"), async (req,res)=>{
-  const {name,email,password,role,garage_id} = req.body;
+// ---------- LOGIN & REGISTER ----------
+app.post('/api/register', async (req,res)=>{
+  const {name,email,password,role} = req.body;
   const hash = await bcrypt.hash(password,10);
-  const result = await pool.query("INSERT INTO users(name,email,password_hash,role,garage_id) VALUES($1,$2,$3,$4,$5) RETURNING *",[name,email,hash,role,garage_id||null]);
-  res.json(result.rows[0]);
+  try {
+    await pool.query(
+      "INSERT INTO users(name,email,password_hash,role) VALUES($1,$2,$3,$4)",
+      [name,email,hash,role]
+    );
+    res.json({success:true});
+  } catch(e) { res.json({error:e.message}); }
 });
 
-// --- GARAGE ---
-app.get("/api/garage/bookings", requireLogin, async (req,res)=>{
-  const user = req.session.user;
-  if(!["garage","garage_staff"].includes(user.role)) return res.status(403).json({error:"Forbidden"});
-  const garage_id = user.garage_id || req.query.garage_id;
-  const result = await pool.query("SELECT b.*, u.name,u.phone,u.email FROM bookings b JOIN users u ON b.user_id=u.id WHERE b.garage_id=$1 ORDER BY b.date,b.time",[garage_id]);
+app.post('/api/login', async (req,res)=>{
+  const {email,password} = req.body;
+  const result = await pool.query("SELECT * FROM users WHERE email=$1",[email]);
+  const user = result.rows[0];
+  if(!user) return res.json({error:"User not found"});
+  const match = await bcrypt.compare(password,user.password_hash);
+  if(!match) return res.json({error:"Incorrect password"});
+  req.session.userId = user.id;
+  req.session.role = user.role;
+  res.json({role:user.role});
+});
+
+// ---------- ADMIN / SUPERADMIN ENDPOINTS ----------
+app.post('/api/admin/reset-db', async (req,res)=>{
+  // Only superadmin
+  if(req.session.role !== 'superadmin') return res.json({error:"Unauthorized"});
+  await pool.query(`
+    DELETE FROM bookings;
+    DELETE FROM users;
+    DELETE FROM garages;
+  `);
+  res.json({success:true});
+});
+
+app.post('/api/admin/reset-users', async (req,res)=>{
+  if(req.session.role !== 'superadmin') return res.json({error:"Unauthorized"});
+  await pool.query("DELETE FROM users");
+  res.json({success:true});
+});
+
+app.post('/api/admin/add-test-data', async (req,res)=>{
+  if(req.session.role !== 'superadmin') return res.json({error:"Unauthorized"});
+  await pool.query("INSERT INTO garages(name,address) VALUES('Test Garage','123 Test St')");
+  await pool.query("INSERT INTO users(name,email,password_hash,role,garage_id) VALUES('Admin','admin@test.com','$2b$10$zjYzRbO9JcVZsD4g/vR7BOSJx2pTqAKXk6rZDW9xh0u7IdzwnO2Qi','admin',1)");
+  res.json({success:true});
+});
+
+app.post('/api/admin/create-user', async (req,res)=>{
+  if(!['superadmin','admin'].includes(req.session.role)) return res.json({error:"Unauthorized"});
+  const {name,email,password,role} = req.body;
+  const hash = await bcrypt.hash(password,10);
+  try{
+    await pool.query("INSERT INTO users(name,email,password_hash,role) VALUES($1,$2,$3,$4)",[name,email,hash,role]);
+    res.json({success:true});
+  } catch(e){ res.json({error:e.message}); }
+});
+
+app.get('/api/admin/garages', async (req,res)=>{
+  const result = await pool.query("SELECT * FROM garages");
   res.json(result.rows);
 });
 
-// --- CUSTOMER ---
-app.post("/api/customer/book", requireLogin, async (req,res)=>{
-  const user = req.session.user;
-  if(user.role!=="customer") return res.status(403).json({error:"Forbidden"});
-  const {garage_id,date,time,service,notes} = req.body;
-  await pool.query("INSERT INTO bookings(user_id,garage_id,date,time,service,notes) VALUES($1,$2,$3,$4,$5,$6)",[user.id,garage_id,date,time,service,notes]);
-  res.json({message:"Booking created"});
+// ---------- GARAGE ENDPOINTS ----------
+app.get('/api/garage/bookings', async (req,res)=>{
+  if(req.session.role!=='garage') return res.json({error:"Unauthorized"});
+  const garageIdResult = await pool.query("SELECT garage_id FROM users WHERE id=$1",[req.session.userId]);
+  const garageId = garageIdResult.rows[0].garage_id;
+  const bookings = await pool.query(
+    "SELECT b.*, u.name, u.email FROM bookings b JOIN users u ON u.id=b.user_id WHERE b.garage_id=$1",
+    [garageId]
+  );
+  res.json(bookings.rows);
 });
 
-app.listen(port, ()=>console.log(`Server running on port ${port}`));
+// ---------- CUSTOMER ENDPOINTS ----------
+app.post('/api/customer/book', async (req,res)=>{
+  if(req.session.role!=='customer') return res.json({error:"Unauthorized"});
+  const {garage_id,date,time,service,notes} = req.body;
+  await pool.query(
+    "INSERT INTO bookings(user_id,garage_id,date,time,service,notes) VALUES($1,$2,$3,$4,$5,$6)",
+    [req.session.userId,garage_id,date,time,service,notes]
+  );
+  res.json({success:true});
+});
+
+// ---------- START SERVER ----------
+app.listen(PORT,()=>console.log(`Server running on port ${PORT}`));
