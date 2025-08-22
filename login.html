@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Login</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="login-container">
+    <h1>Login</h1>
+    <form id="loginForm">
+      <input type="email" placeholder="Email" name="email" required>
+      <input type="password" placeholder="Password" name="password" required>
+      <button type="submit">Login</button>
+    </form>
+  </div>
+
+  <script>
+    const form = document.getElementById('loginForm');
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const email = form.email.value;
+      const password = form.password.value;
+
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+
+      const data = await res.json();
+      if (data.error) { alert(data.error); return; }
+
+      // Redirect based on role
+      if (data.role === 'superadmin' || data.role === 'admin') {
+        window.location.href = '/admin.html';
+      } else if (data.role === 'garage') {
+        window.location.href = '/garage.html';
+      } else if (data.role === 'customer') {
+        window.location.href = '/customer.html';
+      }
+    });
+  </script>
+</body>
+</html>
