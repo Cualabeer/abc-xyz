@@ -31,7 +31,6 @@
       const data = await res.json();
       if (data.error) { alert(data.error); return; }
 
-      // Redirect based on role
       if (data.role === 'superadmin' || data.role === 'admin') {
         window.location.href = '/admin.html';
       } else if (data.role === 'garage') {
