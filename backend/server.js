@@ -1,19 +1,21 @@
 const express = require('express');
 const session = require('express-session');
+const bodyParser = require('body-parser');
 const bcrypt = require('bcrypt');
 const { Pool } = require('pg');
-const bodyParser = require('body-parser');
+const path = require('path');
 const app = express();
 
-// ---------- ENV VARIABLES ----------
+// ----- ENV -----
+require('dotenv').config();
 const PORT = process.env.PORT || 3000;
-const DATABASE_URL = process.env.DATABASE_URL; // Render DB URL
-const SESSION_SECRET = process.env.SESSION_SECRET || 'supersecret';
+const DATABASE_URL = process.env.DATABASE_URL;
+const SESSION_SECRET = process.env.SESSION_SECRET;
 
-// ---------- DATABASE CONNECTION ----------
+// ----- DB -----
 const pool = new Pool({ connectionString: DATABASE_URL });
 
-// ---------- MIDDLEWARE ----------
+// ----- MIDDLEWARE -----
 app.use(bodyParser.json());
 app.use(session({
   secret: SESSION_SECRET,
@@ -21,7 +23,15 @@ app.use(session({
   saveUninitialized: false
 }));
 
-// ---------- LOGIN & REGISTER ----------
+// ----- SERVE FRONTEND -----
+app.use(express.static(path.join(__dirname, '../frontend')));
+
+// Root route
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, '../frontend/login.html'));
+});
+
+// ----- LOGIN & REGISTER -----
 app.post('/api/register', async (req,res)=>{
   const {name,email,password,role} = req.body;
   const hash = await bcrypt.hash(password,10);
@@ -31,7 +41,7 @@ app.post('/api/register', async (req,res)=>{
       [name,email,hash,role]
     );
     res.json({success:true});
-  } catch(e) { res.json({error:e.message}); }
+  } catch(e){ res.json({error:e.message}); }
 });
 
 app.post('/api/login', async (req,res)=>{
@@ -46,15 +56,10 @@ app.post('/api/login', async (req,res)=>{
   res.json({role:user.role});
 });
 
-// ---------- ADMIN / SUPERADMIN ENDPOINTS ----------
+// ----- ADMIN/SUPERADMIN -----
 app.post('/api/admin/reset-db', async (req,res)=>{
-  // Only superadmin
   if(req.session.role !== 'superadmin') return res.json({error:"Unauthorized"});
-  await pool.query(`
-    DELETE FROM bookings;
-    DELETE FROM users;
-    DELETE FROM garages;
-  `);
+  await pool.query("DELETE FROM bookings; DELETE FROM users; DELETE FROM garages;");
   res.json({success:true});
 });
 
@@ -71,22 +76,7 @@ app.post('/api/admin/add-test-data', async (req,res)=>{
   res.json({success:true});
 });
 
-app.post('/api/admin/create-user', async (req,res)=>{
-  if(!['superadmin','admin'].includes(req.session.role)) return res.json({error:"Unauthorized"});
-  const {name,email,password,role} = req.body;
-  const hash = await bcrypt.hash(password,10);
-  try{
-    await pool.query("INSERT INTO users(name,email,password_hash,role) VALUES($1,$2,$3,$4)",[name,email,hash,role]);
-    res.json({success:true});
-  } catch(e){ res.json({error:e.message}); }
-});
-
-app.get('/api/admin/garages', async (req,res)=>{
-  const result = await pool.query("SELECT * FROM garages");
-  res.json(result.rows);
-});
-
-// ---------- GARAGE ENDPOINTS ----------
+// ----- GARAGE -----
 app.get('/api/garage/bookings', async (req,res)=>{
   if(req.session.role!=='garage') return res.json({error:"Unauthorized"});
   const garageIdResult = await pool.query("SELECT garage_id FROM users WHERE id=$1",[req.session.userId]);
@@ -98,7 +88,7 @@ app.get('/api/garage/bookings', async (req,res)=>{
   res.json(bookings.rows);
 });
 
-// ---------- CUSTOMER ENDPOINTS ----------
+// ----- CUSTOMER -----
 app.post('/api/customer/book', async (req,res)=>{
   if(req.session.role!=='customer') return res.json({error:"Unauthorized"});
   const {garage_id,date,time,service,notes} = req.body;
@@ -109,5 +99,5 @@ app.post('/api/customer/book', async (req,res)=>{
   res.json({success:true});
 });
 
-// ---------- START SERVER ----------
+// ----- START SERVER -----
 app.listen(PORT,()=>console.log(`Server running on port ${PORT}`));
